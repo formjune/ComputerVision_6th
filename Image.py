@@ -1,100 +1,146 @@
-import collections
 import math
-
+import os.path
 import cv2
 import numpy
+import numpy as np
 
 
-def vectorLength(p_1, p_2) -> int:
-    return round(math.sqrt((p_1[0] - p_2[0]) ** 2 + (p_1[1] - p_2[1]) ** 2))
+def getDistance(p_0, p_1) -> float:
+    """distance between 2 points"""
+    return math.sqrt((p_0[0][0] - p_1[0][0]) ** 2 + (p_0[0][1] - p_1[0][1]) ** 2)
 
 
-def unique_count_app(a):
-    colors, count = numpy.unique(a.reshape(-1, 3), axis=0, return_counts=True)
-    return colors[count.argmax()]
-
-    #colors, count = numpy.unique(a.reshape(-1, 3), axis=0, return_counts=True)
-    #return
-
-
-def findCorners():
-    """find corner for deformation"""
-    pass
+def getCenters(points) -> float:
+    """distance between diagonal centers"""
+    p_1 = (points[0][0] + points[2][0]) / 2.0, (points[0][1] + points[2][1]) / 2.0
+    p_2 = (points[1][0] + points[3][0]) / 2.0, (points[1][1] + points[3][1]) / 2.0
+    return getDistance([p_1], [p_2])
 
 
-def deformImage(image: numpy.ndarray, polygon: list) -> numpy.ndarray:
-    """deform image"""
-    #y, x = image.shape[:2]
-    x = vectorLength(polygon[0], polygon[1])
-    y = vectorLength(polygon[1], polygon[2])
-    source = numpy.float32(polygon)
-    target = numpy.float32([[0, 0], [x, 0], [x, y], [0, y]])
-    matrix = cv2.getPerspectiveTransform(source, target)
-    return cv2.warpPerspective(image, matrix, (x, y))
+def reorderVertices(points, angle_x, angle_y):
+    """find the closest to top left corner vertex"""
 
-def colorCorrection(image: numpy.ndarray):
-    """correct colors"""
+    distance = math.inf
+    index = 0
+    for i, point in enumerate(points):
+        new_distance = getDistance(point, [[angle_x, angle_y]])
+        if new_distance < distance:
+            distance = new_distance
+            index = i
 
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    value = unique_count_app(image)[2]
-
-    for y in range(image.shape[0]):
-        for x in range(image.shape[1]):
-            image[y, x, 2] = min(255, image[y, x, 2] / value * 255)
+    if not index:
+        return points
+    points = list(points)
+    return points[index:] + points[:index]
 
 
+def mergePoints(points) -> list:
+    """merge points until there are 4 left"""
+    points = list(points)
+    while len(points) > 4:
+        distance = math.inf
+        skip_point = None
+        for i, p_0 in enumerate(points):
+            j = (i + 1) % len(points)
+            new_distance = getDistance(p_0, points[j])
+            if new_distance < distance:
+                distance = new_distance
+                skip_point = j
+
+        points.pop(skip_point)
+    return points
 
 
-    #
-    #
-    #
-    # color = unique_count_app(image)
-    #
-    # image[:, :, 2] *= 255 / color[2]
-    #
-    image = cv2.cvtColor(image, cv2.COLOR_HSV2BGR)
-    return image
+def proceedImage(folder: str, file: str, is_otsu: bool = False) -> tuple:
+    # read image
+    filename = os.path.join(folder, file)
+    img = cv2.imread(filename)
+    assert img is not None
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # gray = cv2.equalizeHist(gray)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    if is_otsu:
+        thresh = cv2.threshold(blur, 180, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    else:
+        thresh = cv2.threshold(blur, 180, 255, cv2.THRESH_BINARY)[1]
+
+    # remove small details to get simplified shape
+    kernel = np.ones((7, 7), np.uint8)
+    morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel)
+
+    # get largest contour
+    contours = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = contours[0] if len(contours) == 2 else contours[1]
+    area_thresh = 0
+    big_contour = None
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area > area_thresh:
+            area_thresh = area
+            big_contour = c
+
+    # get perimeter and contours
+    assert big_contour is not None
+    peri = cv2.arcLength(big_contour, True)
+    corners = cv2.approxPolyDP(big_contour, 0.04 * peri, True)
+
+    # find rectangle and warp
+    corners = reorderVertices(corners, img.shape[1], 0)
+    if len(corners) != 4:
+        corners = mergePoints(corners)
+    assert len(corners) == 4
+    width = 0.5 * (corners[0][0][0] - corners[1][0][0] + corners[3][0][0] - corners[2][0][0])
+    height = 0.5 * (corners[2][0][1] - corners[1][0][1] + corners[3][0][1] - corners[0][0][1])
+    width = np.int0(width)
+    height = np.int0(height)
+
+    in_corner = np.float32([corner[0] for corner in corners])
+    # draw_contour = numpy.reshape(in_corner, (-1, 1, 2)).astype("int32")
+    # cv2.drawContours(img, big_contour, -1, (0, 0, 255), 3)
+    # cv2.circle(img, in_corner[0].astype("uint32"), 5, (255, 0, 0), -1)
+    # cv2.circle(img, in_corner[1].astype("uint32"), 5, (0, 255, 0), -1)
+    # cv2.circle(img, in_corner[2].astype("uint32"), 5, (0, 0, 255), -1)
+    # cv2.circle(img, in_corner[3].astype("uint32"), 5, (255, 255, 0), -1)
+
+    out_corner = [[width, 0], [0, 0], [0, height], [width, height]]
+    out_corner = np.float32(out_corner)
+    matrix = cv2.getPerspectiveTransform(in_corner, out_corner)
+    return getCenters(in_corner), (img, matrix, (width, height))
 
 
-    #mini_image = cv2.resize(image, (100, 100)) // 16
-    #colors = collections.defaultdict(int)
-    # for y in range(100):
-    #     for x in range(100):
-    #         color = tuple(mini_image[x, y])
-    #         colors[color] += 1
+def main(folder_in: str, folder_out: str, light_up: bool = False, resize: float = 1.0):
+    for file in os.listdir(folder_in):
+        try:
+            dis_1, args_1 = proceedImage(folder_in, file, False)
+        except AssertionError:
+            dis_1, args_1 = math.inf, None
 
+        try:
+            dis_2, args_2 = proceedImage(folder_in, file, True)
+        except AssertionError:
+            dis_2, args_2 = math.inf, None
 
-    #color = numpy.array([[max(colors.items(), key=lambda c: c[1])[0]]], dtype="uint8") * 16
-    #print(color.shape)
-    ##color_canvas[0, 0, :] = color
-    #hue = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)[0, 0, 0]
+        if args_1 is None and args_2 is None:
+            continue
+        args = args_1 if dis_1 < dis_2 else args_2
+        # image = args[0]
+        image = cv2.warpPerspective(*args)
 
+        # add histogram
+        if light_up:
+            image_yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+            max_color = numpy.max(image_yuv[:, :, 0])
+            light_channel = image_yuv[:, :, 0] * (255 / max_color)
+            image_yuv[:, :, 0] = light_channel.astype("uint8")
+            image = cv2.cvtColor(image_yuv, cv2.COLOR_YUV2BGR)
 
-def sharpening2(image, kernel_size=(2, 2), sigma=1.0, amount=1.0, threshold=0):
-    """Return a sharpened version of the image, using an unsharp mask."""
-    blurred = cv2.GaussianBlur(image, kernel_size, sigma)
-    sharpened = float(amount + 1) * image - float(amount) * blurred
-    sharpened = numpy.maximum(sharpened, numpy.zeros(sharpened.shape))
-    sharpened = numpy.minimum(sharpened, 255 * numpy.ones(sharpened.shape))
-    sharpened = sharpened.round().astype(numpy.uint8)
-    if threshold > 0:
-        low_contrast_mask = numpy.absolute(image - blurred) < threshold
-        numpy.copyto(sharpened, image, where=low_contrast_mask)
-    return sharpened
+        if resize != 1.0:
+            image = cv2.resize(image, (image.shape[1] * resize, image.shape[0] * resize))
 
-
-def sharpening(image):
-    """sharpen image"""
-    kernel = numpy.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
-    return cv2.filter2D(image, -1, kernel)
-
-    pass
+        cv2.imwrite(os.path.join(folder_out, file), image)
 
 
 if __name__ == '__main__':
-    im = cv2.imread("D:/Screenshot_1.png")
-    im = sharpening(im)
-    im = colorCorrection(im)
-
-    cv2.imshow("windows", im)
-    cv2.waitKey()
+    main(r"D:\test_files", r"D:\test_files_out", True)

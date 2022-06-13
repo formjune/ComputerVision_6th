@@ -1,58 +1,29 @@
+import os.path
 import sys
 from PyQt5.Qt import *
 from PyQt5 import uic
-import cv2
 import Image
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QWidget):
 
     def __init__(self):
-        QMainWindow.__init__(self)
+        QWidget.__init__(self)
         self.ui = uic.loadUi("Window.ui", self)
         self.setWindowTitle("image correction")
-        self.setAcceptDrops(True)
-        self.ui.lbl_source.mousePressEvent = self.labelMousePressEvent
-        self.polygon = []
-        self.image = None
-        self.ui.btn_deform.released.connect(self.deform)
+        self.setFixedSize(601, 171)
+        self.ui.btn_run.released.connect(self.run)
 
-    def dragEnterEvent(self, event: QDragMoveEvent) -> None:
-        event.accept()
-
-    def dropEvent(self, event: QDropEvent) -> None:
-        filename = event.mimeData().text().replace("file:///", "")
-        self.image = cv2.imread(filename)
-        if self.image is None:
+    def run(self):
+        folder_in = self.ui.line_in.text()
+        if not os.path.isdir(folder_in):
+            print("входная директория не существует")
             return
-        y, x = self.image.shape[:2]
-        self.ui.lbl_source.setFixedSize(x, y)
-        self.lbl_source.setPixmap(QPixmap(QImage(self.image.data, x, y, 3 * x, QImage.Format_BGR888)))
-
-    def labelMousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.LeftButton:
-            y = event.y()
-            x = event.x()
-            self.polygon.append((x, y))
-        elif event.button() == Qt.RightButton:
-            self.polygon.clear()
-
-    def deform(self):
-        if self.image is None:
-            print("load an image")
+        folder_out = self.ui.line_out.text()
+        if not os.path.isdir(folder_out):
+            print("выходная директория не существует")
             return
-        elif len(self.polygon) != 4:
-            print("pick 4 points")
-            return
-
-        image = Image.deformImage(self.image, self.polygon)
-        image = Image.colorCorrection(image)
-        y, x = image.shape[:2]
-        y *= 2
-        x *= 2
-        image = cv2.resize(image, (x, y))
-        self.ui.lbl_target.setFixedSize(x, y)
-        self.lbl_target.setPixmap(QPixmap(QImage(image.data, x, y, 3 * x, QImage.Format_BGR888)))
+        Image.main(folder_in, folder_out, self.ui.chb_lighten.isChecked(), self.ui.spin_scale.value())
 
 
 app = QApplication([])
